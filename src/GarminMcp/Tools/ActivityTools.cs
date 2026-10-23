@@ -12,6 +12,7 @@ namespace GarminMcp.Tools;
 public sealed class ActivityTools(GarminDbContext db)
 {
     private const int MaxLimit = 500;
+    public const int MaxTimeseriesPoints = 500;
     private const string ResolutionError = "resolution must be one of: 10s, 30s, 60s, km, lap";
 
     private record ActivitySummary(
@@ -37,7 +38,7 @@ public sealed class ActivityTools(GarminDbContext db)
             IntensityFactor, AerobicTe, AnaerobicTe, FileStatus, Deleted);
 
     [McpServerTool(Name = "list_activities")]
-    [Description("List activities from the local database, newest first. Filter by date range (YYYY-MM-DD, inclusive, by local start time), sport and distance (km). Returns total count and a page of summaries (distance in km, durations in seconds, speed in km/h, pace in seconds per km). Deleted activities are hidden unless include_deleted is true. Limit is capped at 500.")]
+    [Description("List activities from the local database, newest first. Filter by date range (YYYY-MM-DD, inclusive, by local start time), sport and distance (km). Returns total count and a page of summaries (distance in km, durations in seconds, avg_speed_kmh in km/h, pace in seconds per km, avg_cadence in steps per minute for running/walking/hiking and rpm otherwise, heart rate in bpm). Deleted activities are hidden unless include_deleted is true. Limit is capped at 500.")]
     public async Task<string> ListActivities(
         [Description("Range start, YYYY-MM-DD, inclusive (optional)")] string? from = null,
         [Description("Range end, YYYY-MM-DD, inclusive of the whole day (optional)")] string? to = null,
@@ -71,7 +72,8 @@ public sealed class ActivityTools(GarminDbContext db)
         if (!include_deleted) q = q.Where(a => a.DeletedAt == null);
 
         var total = await q.CountAsync();
-        if (total == 0) return ToolJson.NoData(DescribeRange(from, to));
+        if (total == 0)
+            return ToolJson.Serialize(new { Total = 0, Items = Array.Empty<object>(), Message = ToolJson.NoDataMessage(DescribeRange(from, to)) });
 
         var page = await q.OrderByDescending(a => a.StartTimeLocal).ThenByDescending(a => a.ActivityId)
             .Skip(offset).Take(limit).ToListAsync();
@@ -79,7 +81,7 @@ public sealed class ActivityTools(GarminDbContext db)
     }
 
     [McpServerTool(Name = "get_activity")]
-    [Description("Get one activity: summary fields plus heart rate time in zones 1-5 (seconds), laps (distance in km, speed in km/h, pace in seconds per km) and workout details. Set include_raw to also get the raw Garmin JSON (raw, raw_detail).")]
+    [Description("Get one activity: summary fields (as in list_activities) plus heart rate time in zones 1-5 (seconds), laps (start_time_utc in UTC, distance in km, avg_speed_kmh in km/h, pace in seconds per km, avg_cadence in steps per minute for running/walking/hiking and rpm otherwise) and workout details. Set include_raw to also get the raw Garmin JSON (raw, raw_detail).")]
     public async Task<string> GetActivity(
         [Description("Garmin activity id")] long activity_id,
         [Description("Include raw Garmin JSON payloads (default false; large)")] bool include_raw = false)
@@ -97,7 +99,7 @@ public sealed class ActivityTools(GarminDbContext db)
             s.AvgHr, s.MaxHr, s.AvgSpeedKmh, s.AvgPaceSPerKm, s.AvgCadence, s.ElevationGainM, s.Calories, s.AvgPowerW,
             s.TrainingLoad, s.IntensityFactor, s.AerobicTe, s.AnaerobicTe, s.FileStatus, s.Deleted,
             [a.HrZone1S, a.HrZone2S, a.HrZone3S, a.HrZone4S, a.HrZone5S],
-            laps.Select(ToLapView).ToList(),
+            laps.Select(l => ToLapView(l, CadenceFactor(a.Sport))).ToList(),
             a.RawWorkouts?.RootElement,
             include_raw ? a.Raw.RootElement : null,
             include_raw ? a.RawDetail?.RootElement : null);
@@ -105,7 +107,7 @@ public sealed class ActivityTools(GarminDbContext db)
     }
 
     [McpServerTool(Name = "get_activity_timeseries")]
-    [Description("Get the in-activity time series aggregated by resolution: 10s, 30s or 60s time buckets, km (one point per kilometre) or lap (one point per lap). Each point has start_s/end_s (seconds from activity start), distance_km, hr_avg/hr_max (bpm), speed_mps (m/s), pace_s_per_km (seconds per km), cadence_avg, altitude_avg_m (metres) and power_avg_w (watts).")]
+    [Description("Get the in-activity time series aggregated by resolution: 10s, 30s or 60s time buckets, km (one point per kilometre) or lap (one point per lap). Each point has start_s/end_s (seconds from activity start), distance_km, hr_avg/hr_max (bpm), speed_mps (m/s), pace_s_per_km (seconds per km), cadence_avg (steps per minute for running/walking/hiking, rpm otherwise), altitude_avg_m (metres) and power_avg_w (watts). At most 500 points; use a coarser resolution for long activities.")]
     public async Task<string> GetActivityTimeseries(
         [Description("Garmin activity id")] long activity_id,
         [Description("One of: 10s, 30s, 60s, km, lap (default 10s)")] string resolution = "10s")
@@ -114,7 +116,7 @@ public sealed class ActivityTools(GarminDbContext db)
             return ToolJson.Error(ResolutionError);
 
         var a = await db.Activities.AsNoTracking().Where(x => x.ActivityId == activity_id)
-            .Select(x => new { x.FileStatus }).FirstOrDefaultAsync();
+            .Select(x => new { x.FileStatus, x.Sport }).FirstOrDefaultAsync();
         if (a is null)
             return ToolJson.Error($"Activity {activity_id} not found. Run sync or check list_activities.");
 
@@ -131,6 +133,13 @@ public sealed class ActivityTools(GarminDbContext db)
                 .OrderBy(r => r.TimestampUtc).ToListAsync();
             points = TimeseriesAggregator.Aggregate(records, resolution);
         }
+
+        if (points.Count > MaxTimeseriesPoints)
+            return ToolJson.Error($"Too many points ({points.Count}) at resolution {resolution}; {CoarserHint(resolution)}");
+
+        var factor = CadenceFactor(a.Sport);
+        if (factor != 1)
+            points = points.Select(p => p with { CadenceAvg = p.CadenceAvg * factor }).ToList();
 
         if (points.Count == 0)
             return ToolJson.Serialize(new
@@ -160,6 +169,24 @@ public sealed class ActivityTools(GarminDbContext db)
         return result;
     }
 
+    /// <summary>
+    /// FIT zapisuje kadencję biegu/chodu na jedną nogę (rpm); Garmin w podsumowaniu podaje kroki/min. Okrążenia i serie
+    /// dla tych sportów mnożymy ×2, żeby jednostka była spójna z <c>avg_cadence</c> aktywności.
+    /// </summary>
+    private static int CadenceFactor(string? sport) =>
+        sport is not null && (sport.Contains("running", StringComparison.OrdinalIgnoreCase)
+                              || sport.Contains("walking", StringComparison.OrdinalIgnoreCase)
+                              || sport.Contains("hiking", StringComparison.OrdinalIgnoreCase)) ? 2 : 1;
+
+    private static string CoarserHint(string resolution) => resolution switch
+    {
+        "10s" => "use a coarser resolution: 30s, 60s, km or lap",
+        "30s" => "use a coarser resolution: 60s, km or lap",
+        "60s" => "use a coarser resolution: km or lap",
+        "km" => "use a coarser resolution: lap",
+        _ => "no coarser resolution is available",
+    };
+
     private static string DescribeRange(string? from, string? to) =>
         string.IsNullOrWhiteSpace(from) && string.IsNullOrWhiteSpace(to) ? "the requested filters"
         : $"{(string.IsNullOrWhiteSpace(from) ? "start" : from.Trim())}..{(string.IsNullOrWhiteSpace(to) ? "end" : to.Trim())}";
@@ -172,10 +199,10 @@ public sealed class ActivityTools(GarminDbContext db)
         a.Calories, a.AvgPowerW, a.TrainingLoad, a.IntensityFactor, a.AerobicTe, a.AnaerobicTe,
         a.FileStatus, a.DeletedAt != null);
 
-    private static LapView ToLapView(ActivityLap l) => new(
-        l.LapIndex, l.StartTimeUtc.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
+    private static LapView ToLapView(ActivityLap l, int cadenceFactor) => new(
+        l.LapIndex, ToolJson.Utc(l.StartTimeUtc),
         l.ElapsedS, Km(l.DistanceM), l.AvgHr, l.MaxHr, Kmh(l.AvgSpeedMps),
-        TimeseriesAggregator.PaceFromSpeed(l.AvgSpeedMps), l.AvgCadence, l.AscentM);
+        TimeseriesAggregator.PaceFromSpeed(l.AvgSpeedMps), l.AvgCadence * cadenceFactor, l.AscentM);
 
     private static double? Km(double? m) => m.HasValue ? Math.Round(m.Value / 1000.0, 3) : null;
     private static double? Kmh(double? mps) => mps.HasValue ? Math.Round(mps.Value * 3.6, 2) : null;

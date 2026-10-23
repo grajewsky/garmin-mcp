@@ -32,6 +32,29 @@ public class SyncToolsTests(PostgresFixture fx)
     }
 
     [Fact]
+    public async Task SyncStatus_TimestampsUtcToTheSecond()
+    {
+        var host = await SyncTestHost.CreateAsync(fx);
+        host.Handler.On("/activitylist-service", _ => TestGarmin.Json("[]"));
+        await host.Runner.StartAsync(null, null);
+        await host.Runner.CurrentTask!;
+
+        var json = JsonDocument.Parse(await new SyncTools(host.Runner).SyncStatus()).RootElement;
+
+        Assert.Equal("completed", json.GetProperty("status").GetString());
+        foreach (var name in new[] { "started_at", "finished_at", "last_successful_sync_at" })
+            Assert.Matches(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", json.GetProperty(name).GetString());
+    }
+
+    [Fact]
+    public void ToolJson_DateTimeOffset_UtcToTheSecond()
+    {
+        var t = new DateTimeOffset(2026, 10, 23, 14, 5, 6, 789, TimeSpan.FromHours(2));
+        Assert.Equal("""{"at":"2026-10-23T12:05:06Z","maybe":"2026-10-23T12:05:06Z"}""",
+            ToolJson.Serialize(new { At = t, Maybe = (DateTimeOffset?)t }));
+    }
+
+    [Fact]
     public void ToolJson_UsesSnakeCase()
     {
         Assert.Equal("""{"items_done":1}""", ToolJson.Serialize(new { ItemsDone = 1 }));

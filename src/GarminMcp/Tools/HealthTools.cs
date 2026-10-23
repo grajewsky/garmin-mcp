@@ -99,7 +99,7 @@ public sealed class HealthTools(GarminDbContext db)
             (await db.Weights.AsNoTracking().Where(x => x.CalendarDate >= f && x.CalendarDate <= t)
                 .OrderBy(x => x.TimestampUtc).ToListAsync())
             .Select(x => (object)new WeightView(
-                x.TimestampUtc.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss'Z'", CultureInfo.InvariantCulture),
+                ToolJson.Utc(x.TimestampUtc),
                 Date(x.CalendarDate), x.WeightKg, x.Bmi, x.BodyFatPct, x.BodyWaterPct, x.MuscleMass, x.BoneMass))
             .ToList());
 
@@ -118,7 +118,7 @@ public sealed class HealthTools(GarminDbContext db)
         if (s is null) return ToolJson.NoData(dataset);
         return ToolJson.Serialize(new
         {
-            FetchedAt = s.FetchedAt.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss'Z'", CultureInfo.InvariantCulture),
+            FetchedAt = ToolJson.Utc(s.FetchedAt),
             Data = s.Raw.RootElement,
         });
     }

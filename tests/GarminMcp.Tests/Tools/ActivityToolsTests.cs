@@ -96,6 +96,8 @@ public class ActivityToolsTests(PostgresFixture fx)
         var json = Parse(await tools.ListActivities(from: "2026-01-01", to: "2026-01-31"));
 
         Assert.StartsWith("No data for 2026-01-01..2026-01-31", json.GetProperty("message").GetString());
+        Assert.Equal(0, json.GetProperty("total").GetInt32());
+        Assert.Equal(0, json.GetProperty("items").GetArrayLength());
     }
 
     [Fact]
@@ -135,6 +137,7 @@ public class ActivityToolsTests(PostgresFixture fx)
         var laps = json.GetProperty("laps");
         Assert.Equal(2, laps.GetArrayLength());
         Assert.Equal(0, laps[0].GetProperty("lap_index").GetInt32());
+        Assert.Equal("2026-10-21T18:00:00Z", laps[0].GetProperty("start_time_utc").GetString());
         Assert.Equal(400, laps[0].GetProperty("avg_pace_s_per_km").GetDouble());
         Assert.Equal(1, json.GetProperty("workouts")[0].GetProperty("w").GetInt32());
     }
@@ -202,5 +205,65 @@ public class ActivityToolsTests(PostgresFixture fx)
         Assert.Equal(3, Parse(await tools.GetActivityTimeseries(9)).GetProperty("points").GetArrayLength());
         Assert.Equal("resolution must be one of: 10s, 30s, 60s, km, lap",
             Parse(await tools.GetActivityTimeseries(9, "5s")).GetProperty("error").GetString());
+    }
+
+    [Theory]
+    [InlineData("running", 2)]
+    [InlineData("trail_running", 2)]
+    [InlineData("walking", 2)]
+    [InlineData("hiking", 2)]
+    [InlineData("cycling", 1)]
+    public async Task Cadence_StepSportsDoubledInLapsAndTimeseries(string sport, int factor)
+    {
+        var a = NewActivity(9, sport, new DateTime(2026, 10, 21, 18, 0, 0));
+        a.AvgCadence = 170;
+        var (tools, db) = await CreateAsync(a);
+        db.ActivityLaps.Add(new ActivityLap { ActivityId = 9, LapIndex = 0, StartTimeUtc = a.StartTimeUtc, ElapsedS = 20, AvgCadence = 85 });
+        db.ActivityRecords.AddRange(Enumerable.Range(0, 20).Select(i => new ActivityRecord
+        {
+            ActivityId = 9, TimestampUtc = a.StartTimeUtc.AddSeconds(i), ElapsedS = i, Cadence = 84,
+        }));
+        await db.SaveChangesAsync();
+
+        var lap = Parse(await tools.GetActivity(9)).GetProperty("laps")[0];
+        var points = Parse(await tools.GetActivityTimeseries(9)).GetProperty("points");
+        var lapPoint = Parse(await tools.GetActivityTimeseries(9, "lap")).GetProperty("points")[0];
+        var summary = Parse(await tools.GetActivity(9));
+
+        Assert.Equal(85 * factor, lap.GetProperty("avg_cadence").GetDouble());
+        Assert.All(points.EnumerateArray(), p => Assert.Equal(84 * factor, p.GetProperty("cadence_avg").GetDouble()));
+        Assert.Equal(85 * factor, lapPoint.GetProperty("cadence_avg").GetDouble());
+        Assert.Equal(170, summary.GetProperty("avg_cadence").GetDouble());
+    }
+
+    [Fact]
+    public async Task Timeseries_MoreThan500Points_ReturnsErrorSuggestingCoarser()
+    {
+        var a = NewActivity(9, "running", new DateTime(2026, 10, 21, 18, 0, 0));
+        var (tools, db) = await CreateAsync(a);
+        db.ActivityRecords.AddRange(Enumerable.Range(0, 5010).Select(i => new ActivityRecord
+        {
+            ActivityId = 9, TimestampUtc = a.StartTimeUtc.AddSeconds(i), ElapsedS = i, Hr = 120,
+        }));
+        await db.SaveChangesAsync();
+
+        Assert.Equal("Too many points (501) at resolution 10s; use a coarser resolution: 30s, 60s, km or lap",
+            Parse(await tools.GetActivityTimeseries(9, "10s")).GetProperty("error").GetString());
+        Assert.Equal(167, Parse(await tools.GetActivityTimeseries(9, "30s")).GetProperty("points").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Timeseries_Exactly500Points_Allowed()
+    {
+        var a = NewActivity(9, "running", new DateTime(2026, 10, 21, 18, 0, 0));
+        var (tools, db) = await CreateAsync(a);
+        db.ActivityRecords.AddRange(Enumerable.Range(0, 5000).Select(i => new ActivityRecord
+        {
+            ActivityId = 9, TimestampUtc = a.StartTimeUtc.AddSeconds(i), ElapsedS = i, Hr = 120,
+        }));
+        await db.SaveChangesAsync();
+
+        Assert.Equal(ActivityTools.MaxTimeseriesPoints,
+            Parse(await tools.GetActivityTimeseries(9, "10s")).GetProperty("points").GetArrayLength());
     }
 }

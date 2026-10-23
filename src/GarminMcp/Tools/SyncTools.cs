@@ -24,7 +24,7 @@ public sealed class SyncTools(SyncJobRunner runner)
     }
 
     [McpServerTool(Name = "sync_status")]
-    [Description("Show progress of the latest sync: status (running, completed, failed, auth_failed, interrupted, never_run), current phase, items done/total, recent errors and the time of the last successful sync.")]
+    [Description("Show progress of the latest sync: status (running, completed, failed, auth_failed, interrupted, never_run), current phase, items done/total, recent errors and the time of the last successful sync. started_at, finished_at and last_successful_sync_at are UTC (YYYY-MM-DDTHH:MM:SSZ).")]
     public async Task<string> SyncStatus()
     {
         var view = await runner.GetStatusAsync();
