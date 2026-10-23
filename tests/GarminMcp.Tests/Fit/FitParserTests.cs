@@ -39,7 +39,7 @@ public class FitParserTests
         var data = FitParser.Parse(1, FitFileBuilder.Zip("a.fit", Fit()));
 
         Assert.Equal(52.386, data.Records[0].Lat!.Value, 1e-3);
-        Assert.Equal(20.9, data.Records[0].Lon!.Value, 1e-1);
+        Assert.Equal(250_000_000 * 180.0 / 2147483648.0, data.Records[0].Lon!.Value, 1e-6);
     }
 
     [Fact]
@@ -78,5 +78,15 @@ public class FitParserTests
         var truncated = fit[..(fit.Length / 2)];
 
         Assert.Throws<FitParseException>(() => FitParser.Parse(1, truncated));
+    }
+
+    [Fact]
+    public void Parse_ZipWithCorruptedEntryData_Throws()
+    {
+        var zip = FitFileBuilder.Zip("a.fit", Fit());
+        var start = 30 + "a.fit".Length;
+        for (var i = start; i < start + 40; i++) zip[i] ^= 0xFF;
+
+        Assert.Throws<FitParseException>(() => FitParser.Parse(1, zip));
     }
 }

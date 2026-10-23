@@ -39,10 +39,19 @@ public static class FitParser
             var fit = FindEntry(zip, ".fit");
             if (fit is not null)
             {
-                using var es = fit.Open();
-                using var ms = new MemoryStream();
-                es.CopyTo(ms);
-                return ParseFit(activityId, ms.ToArray());
+                byte[] content;
+                try
+                {
+                    using var es = fit.Open();
+                    using var ms = new MemoryStream();
+                    es.CopyTo(ms);
+                    content = ms.ToArray();
+                }
+                catch (Exception ex) when (ex is InvalidDataException or IOException)
+                {
+                    throw new FitParseException($"Cannot read FIT entry from zip: {ex.Message}", ex);
+                }
+                return ParseFit(activityId, content);
             }
             if (FindEntry(zip, ".gpx") is not null) return Empty("gpx");
             if (FindEntry(zip, ".tcx") is not null) return Empty("tcx");
@@ -119,7 +128,11 @@ public static class FitParser
             stream.Position = 0;
             decode.Read(stream);
         }
-        catch (FitException ex)
+        catch (FitParseException)
+        {
+            throw;
+        }
+        catch (Exception ex)
         {
             throw new FitParseException($"Cannot decode FIT file: {ex.Message}", ex);
         }
