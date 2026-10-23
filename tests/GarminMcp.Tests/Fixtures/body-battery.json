@@ -1,0 +1,3 @@
+[{"date":"2022-08-10","charged":60,"drained":55,
+"bodyBatteryValueDescriptorDTOList":[{"bodyBatteryValueDescriptorIndex":0,"bodyBatteryValueDescriptorKey":"timestamp"},{"bodyBatteryValueDescriptorIndex":1,"bodyBatteryValueDescriptorKey":"bodyBatteryStatus"},{"bodyBatteryValueDescriptorIndex":2,"bodyBatteryValueDescriptorKey":"bodyBatteryLevel"}],
+"bodyBatteryValuesArray":[[1660000000000,"x",40],[1660000900000,"x",87],[1660001800000,"x",12]]}]

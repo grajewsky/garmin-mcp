@@ -1,0 +1,4 @@
+{"data":[{"calendarDate":"2022-08-10","movement":{"steps":9876},"calories":{"burnedTotal":2450.5,"burnedActive":600},
+"heartRate":{"restingValue":52,"minValue":45,"maxValue":170},"intensityMinutes":{"moderate":30,"vigorous":25},
+"stress":{"avgLevel":31,"maxLevel":88},"bodyBattery":{"minValue":12,"maxValue":95}},
+{"calendarDate":"2022-08-11","movement":{"steps":5000}}]}

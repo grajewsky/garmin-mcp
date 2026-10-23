@@ -1,0 +1,5 @@
+{"activityId":1000000001,"activityName":"Morning Run","activityType":{"typeKey":"running"},"eventType":{"typeKey":"training"},
+"startTimeLocal":"2022-08-10 11:47:59","startTimeGMT":"2022-08-10 09:47:59","distance":10120,"duration":3300.5,"movingDuration":3250.2,"elapsedDuration":3400,
+"averageHR":152,"maxHR":178,"averageSpeed":3.07,"maxSpeed":4.5,"averageRunningCadenceInStepsPerMinute":168,"elevationGain":85.5,"calories":720,"avgPower":240,
+"activityTrainingLoad":150.3,"intensityFactor":0.9,"aerobicTrainingEffect":3.5,"anaerobicTrainingEffect":1.2,
+"hrTimeInZone_1":300,"hrTimeInZone_2":900,"hrTimeInZone_3":1200,"hrTimeInZone_4":700,"hrTimeInZone_5":200}
