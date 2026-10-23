@@ -6,3 +6,7 @@ samples/
 .vs/
 .idea/
 .superpowers/
+
+# Lokalne dokumenty (nie publikowane)
+docs/superpowers/
+docs/garmin-personal-api-openapi.json

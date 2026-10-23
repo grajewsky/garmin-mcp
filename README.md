@@ -117,7 +117,7 @@ odpowiedź zawiera komunikat z sugestią uruchomienia `sync`. Jednostki są opis
 ## Znane ograniczenia
 
 - **Brak weryfikacji na prawdziwym koncie.** Mapowanie pól powstało ze specyfikacji OpenAPI Garmina
-  ([docs/garmin-personal-api-openapi.json](docs/garmin-personal-api-openapi.json)). Do sprawdzenia API na swoim koncie
+  ([Swagger Docs Personal API](https://developer.garmin.com/gc-developer-program/personal/swagger-docs/)). Do sprawdzenia API na swoim koncie
   służy `python3 tools/api_probe.py` (zapisuje odpowiedzi do ignorowanego przez git katalogu `samples/`).
   Jeśli odpowiedź ma inny kształt niż oczekiwany, paczka nie jest oznaczana jako pobrana i trafia do błędów w
   `sync_status` — dane nie giną po cichu.
@@ -154,7 +154,7 @@ src/GarminMcp/
   Tools/     narzędzia MCP
   Hosting/   walidacja Origin
 tests/GarminMcp.Tests/
-docs/        specyfikacja API Garmina, dokument projektowy i plan implementacji
+tools/api_probe.py   weryfikacja Personal API na własnym koncie
 ```
 
 Migracje bazy uruchamiają się automatycznie przy starcie aplikacji.
