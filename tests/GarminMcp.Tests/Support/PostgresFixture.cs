@@ -16,7 +16,10 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     public string ConnectionString => _container.GetConnectionString();
 
-    /// <summary>Tworzy świeżą bazę t_&lt;guid&gt;, stosuje migracje i zwraca kontekst na niej.</summary>
+    /// <summary>
+    /// Tworzy świeżą bazę t_&lt;guid&gt;, stosuje migracje i zwraca kontekst na niej. Izolacja przez unikalną nazwę
+    /// bazy (bazy nie są usuwane — znikają z kontenerem), więc pula połączeń nie koliduje z DROP DATABASE.
+    /// </summary>
     public async Task<GarminDbContext> CreateContextAsync()
     {
         var dbName = "t_" + Guid.NewGuid().ToString("N");
@@ -27,7 +30,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             await cmd.ExecuteNonQueryAsync();
         }
 
-        var cs = new NpgsqlConnectionStringBuilder(ConnectionString) { Database = dbName, Pooling = false }.ConnectionString;
+        var cs = new NpgsqlConnectionStringBuilder(ConnectionString) { Database = dbName }.ConnectionString;
         var db = NewContext(cs);
         await db.Database.MigrateAsync();
         return db;
@@ -43,7 +46,36 @@ public sealed class PostgresFixture : IAsyncLifetime
             .UseSnakeCaseNamingConvention()
             .Options);
 
-    public Task InitializeAsync() => _container.StartAsync();
+    public async Task InitializeAsync()
+    {
+        await _container.StartAsync();
+        await WaitUntilReachableAsync(TimeSpan.FromSeconds(30));
+    }
+
+    /// <summary>
+    /// Kontener bywa "gotowy" zanim port opublikowany na hoście przyjmuje połączenia — ponawiaj połączenie
+    /// i <c>SELECT 1</c> z hosta, aż się uda albo minie limit.
+    /// </summary>
+    private async Task WaitUntilReachableAsync(TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            try
+            {
+                await using var conn = new NpgsqlConnection(ConnectionString);
+                await conn.OpenAsync();
+                await using var cmd = new NpgsqlCommand("SELECT 1", conn);
+                await cmd.ExecuteScalarAsync();
+                return;
+            }
+            catch (Exception) when (DateTime.UtcNow < deadline)
+            {
+                NpgsqlConnection.ClearAllPools();
+                await Task.Delay(250);
+            }
+        }
+    }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
 }
