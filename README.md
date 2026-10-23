@@ -38,7 +38,8 @@ start serwera nie łączy się z Garminem.
    ```
 
    Porty są publikowane tylko na `127.0.0.1` (MCP: 8765, Postgres: 5432, zmienialny przez `POSTGRES_PORT`).
-   Serwer MCP nie ma uwierzytelniania, więc nie wystawiaj go poza localhost.
+   Serwer MCP nie ma uwierzytelniania, więc nie wystawiaj go poza localhost. Przyjmuje tylko nagłówek `Host`
+   `localhost`/`127.0.0.1`, a żądania do `/mcp` z nagłówkiem `Origin` spoza loopback dostają 403 (ochrona przed DNS rebinding).
 
 4. Podłącz do Claude Code:
 

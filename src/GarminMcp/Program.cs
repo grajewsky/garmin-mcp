@@ -1,4 +1,5 @@
 using GarminMcp.Garmin;
+using GarminMcp.Hosting;
 using GarminMcp.Storage;
 using GarminMcp.Sync;
 using GarminMcp.Tools;
@@ -39,6 +40,7 @@ await using (var scope = app.Services.CreateAsyncScope())
 }
 await app.Services.GetRequiredService<SyncJobRunner>().MarkInterruptedAsync();
 
+app.UseLoopbackOriginCheck("/mcp");
 app.MapMcp("/mcp");
 app.MapGet("/healthz", () => "ok");
 
