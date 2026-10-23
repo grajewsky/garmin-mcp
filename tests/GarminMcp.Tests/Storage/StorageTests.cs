@@ -90,4 +90,23 @@ public class StorageTests(PostgresFixture fx)
         await writer.ReplaceAsync(7, Make(5), default);
         Assert.Equal(5, await db.ActivityRecords.CountAsync(r => r.ActivityId == 7));
     }
+
+    [Fact]
+    public async Task RecordWriter_InsideRolledBackOuterTransaction_KeepsPreviousRecords()
+    {
+        await using var db = await fx.CreateContextAsync();
+        var writer = new ActivityRecordWriter(db);
+        var t0 = new DateTimeOffset(2024, 5, 1, 5, 30, 0, TimeSpan.Zero);
+        List<ActivityRecord> Make(int n) => Enumerable.Range(0, n)
+            .Select(i => new ActivityRecord { ActivityId = 8, TimestampUtc = t0.AddSeconds(i), ElapsedS = i }).ToList();
+
+        await writer.ReplaceAsync(8, Make(10), default);
+        await using (var tx = await db.Database.BeginTransactionAsync())
+        {
+            await writer.ReplaceAsync(8, Make(3), default);
+            Assert.Equal(3, await db.ActivityRecords.CountAsync(r => r.ActivityId == 8));
+            await tx.RollbackAsync();
+        }
+        Assert.Equal(10, await db.ActivityRecords.CountAsync(r => r.ActivityId == 8));
+    }
 }

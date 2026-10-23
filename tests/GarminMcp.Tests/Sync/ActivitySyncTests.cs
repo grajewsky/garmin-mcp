@@ -274,4 +274,38 @@ public class ActivitySyncTests(PostgresFixture fx)
         Assert.NotNull((await db.Activities.SingleAsync(a => a.ActivityId == 1002)).DetailFetchedAt);
         Assert.Null((await db.Activities.SingleAsync(a => a.ActivityId == 1003)).DetailFetchedAt);
     }
+
+    [Theory]
+    [InlineData(404, "")]
+    [InlineData(200, "{}")]
+    public async Task ListResponseNullOrNotArray_Throws_MarksNothingDeleted(int status, string body)
+    {
+        var env = await CreateAsync();
+        await Run(env, new RecordingProgress());
+        env.Handler.On(ListPath, _ => status == 404
+            ? new HttpResponseMessage(HttpStatusCode.NotFound)
+            : TestGarmin.Json(body));
+
+        await Assert.ThrowsAsync<SyncException>(() => Run(env, new RecordingProgress()));
+
+        await using var db = PostgresFixture.OpenAnother(env.Db);
+        Assert.Equal(0, await db.Activities.CountAsync(a => a.DeletedAt != null));
+    }
+
+    [Fact]
+    public async Task RangeSync_AlsoFetchesPendingActivitiesOutsideRange()
+    {
+        var env = await CreateAsync();
+        env.Handler.On(DetailPath + "1003", _ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
+        await Run(env, new RecordingProgress()); // 1003 stays pending
+        env.Handler.On(DetailPath + "1003", _ => TestGarmin.Json("{}"));
+        env.Handler.Calls.Clear();
+        await Run(env, new RecordingProgress(), new SyncScope(new DateOnly(2022, 8, 10), new DateOnly(2022, 8, 10)));
+
+        Assert.True(env.Handler.CountCalls(DetailPath + "1001") > 0);
+        Assert.Equal(0, env.Handler.CountCalls(DetailPath + "1002"));
+        Assert.True(env.Handler.CountCalls(DetailPath + "1003") > 0);
+        await using var db = PostgresFixture.OpenAnother(env.Db);
+        Assert.NotNull((await db.Activities.SingleAsync(a => a.ActivityId == 1003)).DetailFetchedAt);
+    }
 }

@@ -13,7 +13,8 @@ public sealed class ActivityRecordWriter(GarminDbContext db)
 
     public async Task ReplaceAsync(long activityId, IReadOnlyList<ActivityRecord> records, CancellationToken ct)
     {
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var own = db.Database.CurrentTransaction is null;
+        var tx = own ? await db.Database.BeginTransactionAsync(ct) : db.Database.CurrentTransaction!;
         await db.ActivityRecords.Where(r => r.ActivityId == activityId).ExecuteDeleteAsync(ct);
 
         var conn = (NpgsqlConnection)db.Database.GetDbConnection();
@@ -37,7 +38,11 @@ public sealed class ActivityRecordWriter(GarminDbContext db)
             await importer.CompleteAsync(ct);
         }
 
-        await tx.CommitAsync(ct);
+        if (own)
+        {
+            await tx.CommitAsync(ct);
+            await tx.DisposeAsync();
+        }
     }
 
     private static async Task WriteNullable<T>(NpgsqlBinaryImporter importer, T? value, NpgsqlDbType type, CancellationToken ct)

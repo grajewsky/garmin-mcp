@@ -37,7 +37,8 @@ public sealed class ActivitySync(GarminApiClient api, GarminDbContext db, Activi
                 throw new SyncException($"Activity list exceeded {MaxPages} pages");
             var path = $"/activitylist-service/activities/search/activities?start={page * PageSize}&limit={PageSize}&sortOrder=asc{range}";
             using var doc = await api.GetJsonAsync(path, ct);
-            if (doc is null || doc.RootElement.ValueKind != JsonValueKind.Array) break;
+            if (doc is null || doc.RootElement.ValueKind != JsonValueKind.Array)
+                throw new SyncException("Activity list response was empty or not an array; listing is incomplete");
             var items = doc.RootElement.EnumerateArray().ToList();
             if (items.Count == 0) break;
 
@@ -108,7 +109,8 @@ public sealed class ActivitySync(GarminApiClient api, GarminDbContext db, Activi
         {
             var from = scope.From?.ToDateTime(TimeOnly.MinValue);
             var toExclusive = scope.To?.AddDays(1).ToDateTime(TimeOnly.MinValue);
-            query = query.Where(a => (from == null || a.StartTimeLocal >= from) && (toExclusive == null || a.StartTimeLocal < toExclusive));
+            query = query.Where(a => a.DetailFetchedAt == null
+                || ((from == null || a.StartTimeLocal >= from) && (toExclusive == null || a.StartTimeLocal < toExclusive)));
         }
         else
         {
@@ -166,6 +168,7 @@ public sealed class ActivitySync(GarminApiClient api, GarminDbContext db, Activi
             }
         }
 
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
         // Zastąp dane pochodne od pliku (bez duplikatów przy ponownym pobraniu).
         await db.ActivityFiles.Where(f => f.ActivityId == id).ExecuteDeleteAsync(ct);
         await db.ActivityLaps.Where(l => l.ActivityId == id).ExecuteDeleteAsync(ct);
@@ -192,6 +195,7 @@ public sealed class ActivitySync(GarminApiClient api, GarminDbContext db, Activi
 
         activity.DetailFetchedAt = now;
         await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
     }
 
     private static string Fmt(DateOnly d) => d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
