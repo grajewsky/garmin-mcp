@@ -7,7 +7,7 @@ using Microsoft.Extensions.Options;
 namespace GarminMcp.Garmin;
 
 /// <summary>
-/// Wydaje i cache'uje token dostępowy Garmin. Nowy token tylko gdy brak, wygasł lub został unieważniony.
+/// Wydaje i cache'uje token dostępowy Garmin. Nowy token tylko gdy brak, wygasł lub endpoint danych go odrzucił (<see cref="RefreshAsync"/>).
 /// </summary>
 public sealed class TokenProvider(HttpClient http, ITokenStore store, IOptions<GarminOptions> options, TimeProvider time)
 {
@@ -15,18 +15,21 @@ public sealed class TokenProvider(HttpClient http, ITokenStore store, IOptions<G
     private static readonly TimeSpan ExpiryMargin = TimeSpan.FromMinutes(5);
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    public async Task<string> GetTokenAsync(CancellationToken ct)
+    public async Task<string> GetTokenAsync(CancellationToken ct) => (await AcquireAsync(ct)).Token;
+
+    /// <summary>Jak <see cref="GetTokenAsync"/>; <c>Issued</c> = token właśnie wydany przez Garmina (nie z cache).</summary>
+    public async Task<(string Token, bool Issued)> AcquireAsync(CancellationToken ct)
     {
         await _gate.WaitAsync(ct);
         try
         {
             var stored = await store.LoadAsync(ct);
             if (stored is not null && stored.ExpiresAt - ExpiryMargin > time.GetUtcNow())
-                return stored.Token;
+                return (stored.Token, false);
 
             var fresh = await RequestTokenAsync(ct);
             await store.SaveAsync(fresh, ct);
-            return fresh.Token;
+            return (fresh.Token, true);
         }
         finally
         {
@@ -34,24 +37,23 @@ public sealed class TokenProvider(HttpClient http, ITokenStore store, IOptions<G
         }
     }
 
-    public Task InvalidateAsync(CancellationToken ct) => InvalidateAsync(null, ct);
-
     /// <summary>
-    /// Czyści zapisany token. Gdy podano <paramref name="rejectedToken"/>, czyści tylko jeśli zapisany token
-    /// nadal jest tym odrzuconym (nie kasuje tokenu już wymienionego przez równoległe żądanie).
+    /// Wymusza nowy token po odrzuceniu <paramref name="rejectedToken"/>. Najpierw pobiera nowy token, a zapisany
+    /// zastępuje dopiero po udanym wydaniu (przy błędzie stary zostaje). Jeśli zapisany token jest już inny niż
+    /// odrzucony (wymieniony przez równoległe żądanie) i ważny, zwraca go bez wydawania nowego.
     /// </summary>
-    public async Task InvalidateAsync(string? rejectedToken, CancellationToken ct)
+    public async Task<string> RefreshAsync(string rejectedToken, CancellationToken ct)
     {
         await _gate.WaitAsync(ct);
         try
         {
-            if (rejectedToken is not null)
-            {
-                var stored = await store.LoadAsync(ct);
-                if (stored is null || stored.Token != rejectedToken)
-                    return;
-            }
-            await store.ClearAsync(ct);
+            var stored = await store.LoadAsync(ct);
+            if (stored is not null && stored.Token != rejectedToken && stored.ExpiresAt - ExpiryMargin > time.GetUtcNow())
+                return stored.Token;
+
+            var fresh = await RequestTokenAsync(ct);
+            await store.SaveAsync(fresh, ct);
+            return fresh.Token;
         }
         finally
         {
@@ -74,10 +76,19 @@ public sealed class TokenProvider(HttpClient http, ITokenStore store, IOptions<G
             throw new GarminAuthException(
                 "Garmin rejected the API key when issuing a token (401). The key may be invalid or Garmin may be limiting token requests — try again later or create a new key in Garmin Connect.");
         if (!response.IsSuccessStatusCode)
-            throw new GarminApiException((int)response.StatusCode, TokenPath);
+            throw new GarminAuthException(
+                $"Garmin token endpoint failed with status {(int)response.StatusCode}; could not obtain an access token — try again later.");
 
         var jwt = (await response.Content.ReadAsStringAsync(ct)).Trim();
+        if (!LooksLikeJwt(jwt))
+            throw new GarminAuthException("Garmin token endpoint returned a response that is not a JWT; no token was stored.");
         return new StoredToken(jwt, ReadExpiry(jwt) ?? time.GetUtcNow().AddHours(24));
+    }
+
+    private static bool LooksLikeJwt(string s)
+    {
+        var parts = s.Split('.');
+        return parts.Length == 3 && parts.All(p => p.Length > 0 && !p.Any(char.IsWhiteSpace));
     }
 
     private static DateTimeOffset? ReadExpiry(string jwt)

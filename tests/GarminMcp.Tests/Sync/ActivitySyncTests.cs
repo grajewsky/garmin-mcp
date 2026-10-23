@@ -24,6 +24,7 @@ public class ActivitySyncTests(PostgresFixture fx)
         public required GarminDbContext Db { get; init; }
         public required FakeGarminHandler Handler { get; init; }
         public required ActivitySync Sync { get; init; }
+        public required InMemoryTokenStore Store { get; init; }
         public List<JsonNode> Items { get; set; } = [];
         public byte[] FitZip { get; init; } = FitFileBuilder.Zip("a.fit", FitFileBuilder.Build(
             Now.AddDays(-1), 120, i => ((byte)(120 + i % 10), 3f, 500000000 + i * 100, 100000000 + i * 100), 60));
@@ -43,9 +44,10 @@ public class ActivitySyncTests(PostgresFixture fx)
     {
         var db = await fx.CreateContextAsync();
         var handler = new FakeGarminHandler();
-        var (client, _) = TestGarmin.Create(handler);
+        var store = new InMemoryTokenStore();
+        var (client, _) = TestGarmin.Create(handler, store);
         var time = new FakeTime(Now);
-        var env = new Env { Db = db, Handler = handler, Sync = new ActivitySync(client, db, new ActivityRecordWriter(db), time) };
+        var env = new Env { Db = db, Handler = handler, Store = store, Sync = new ActivitySync(client, db, new ActivityRecordWriter(db), time) };
         for (var i = 1; i <= count; i++) env.Items.Add(Item(1000 + i, $"Run {i}", 9 + i));
 
         handler.On(ListPath, req =>
@@ -259,13 +261,17 @@ public class ActivitySyncTests(PostgresFixture fx)
     }
 
     [Fact]
-    public async Task AuthFailureMidway_Propagates_KeepsAlreadyFetched()
+    public async Task AuthFailureMidway_NoTokenObtainable_Propagates_KeepsAlreadyFetched()
     {
         var env = await CreateAsync();
-        var tokenCalls = 0;
-        env.Handler.On(DetailPath + "1003", _ => new HttpResponseMessage(HttpStatusCode.Unauthorized));
-        env.Handler.On(TestGarmin.TokenPrefix, _ =>
-            ++tokenCalls == 1 ? TestGarmin.Text(TestGarmin.Jwt(Now.AddYears(50))) : new HttpResponseMessage(HttpStatusCode.Unauthorized));
+        env.Handler.On(TestGarmin.TokenPrefix, _ => TestGarmin.Text(TestGarmin.Jwt(Now.AddYears(50))));
+        env.Handler.On(DetailPath + "1003", _ =>
+        {
+            // Token znika (np. wygasł) i Garmin odmawia wydania nowego.
+            env.Store.Current = null;
+            env.Handler.On(TestGarmin.TokenPrefix, _ => new HttpResponseMessage(HttpStatusCode.Unauthorized));
+            return TestGarmin.Json("""{"detail":true}""");
+        });
 
         await Assert.ThrowsAsync<GarminAuthException>(() => Run(env, new RecordingProgress()));
 
@@ -273,6 +279,22 @@ public class ActivitySyncTests(PostgresFixture fx)
         Assert.NotNull((await db.Activities.SingleAsync(a => a.ActivityId == 1001)).DetailFetchedAt);
         Assert.NotNull((await db.Activities.SingleAsync(a => a.ActivityId == 1002)).DetailFetchedAt);
         Assert.Null((await db.Activities.SingleAsync(a => a.ActivityId == 1003)).DetailFetchedAt);
+    }
+
+    [Fact]
+    public async Task Endpoint401OnTokenThatWorked_RecordsError_NoTokenIssuance_Continues()
+    {
+        var env = await CreateAsync();
+        env.Handler.On(DetailPath + "1002", _ => new HttpResponseMessage(HttpStatusCode.Unauthorized));
+        var p = new RecordingProgress();
+
+        await Run(env, p);
+
+        Assert.Contains("activity 1002: HTTP 401", p.Errors);
+        Assert.Equal(1, env.Handler.CountCalls(TestGarmin.TokenPrefix));
+        await using var db = PostgresFixture.OpenAnother(env.Db);
+        Assert.Null((await db.Activities.SingleAsync(a => a.ActivityId == 1002)).DetailFetchedAt);
+        Assert.NotNull((await db.Activities.SingleAsync(a => a.ActivityId == 1003)).DetailFetchedAt);
     }
 
     [Theory]

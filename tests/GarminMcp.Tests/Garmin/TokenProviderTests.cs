@@ -87,30 +87,78 @@ public class TokenProviderTests
     }
 
     [Fact]
-    public async Task Invalidate_StaleRejectedToken_DoesNotClearCurrent()
+    public async Task Refresh_StaleRejectedToken_ReturnsCurrentWithoutIssuing()
     {
         var h = new FakeGarminHandler();
         var store = new InMemoryTokenStore();
         var (_, tokens) = TestGarmin.Create(h, store);
         var current = await tokens.GetTokenAsync(CancellationToken.None);
 
-        await tokens.InvalidateAsync("already-replaced-token", CancellationToken.None);
+        var refreshed = await tokens.RefreshAsync("already-replaced-token", CancellationToken.None);
 
+        Assert.Equal(current, refreshed);
         Assert.Equal(current, (await store.LoadAsync(CancellationToken.None))!.Token);
-        Assert.Equal(current, await tokens.GetTokenAsync(CancellationToken.None));
         Assert.Equal(1, h.CountCalls("/personalapitoken-service"));
     }
 
     [Fact]
-    public async Task Invalidate_MatchingRejectedToken_ClearsStore()
+    public async Task Refresh_MatchingRejectedToken_ReplacesStoredToken()
     {
         var h = new FakeGarminHandler();
         var store = new InMemoryTokenStore();
         var (_, tokens) = TestGarmin.Create(h, store);
         var current = await tokens.GetTokenAsync(CancellationToken.None);
+        var next = TestGarmin.Jwt(DateTimeOffset.UtcNow.AddHours(23));
+        h.On("/personalapitoken-service", _ => TestGarmin.Text(next));
 
-        await tokens.InvalidateAsync(current, CancellationToken.None);
+        var refreshed = await tokens.RefreshAsync(current, CancellationToken.None);
 
-        Assert.Null(await store.LoadAsync(CancellationToken.None));
+        Assert.Equal(next, refreshed);
+        Assert.Equal(next, (await store.LoadAsync(CancellationToken.None))!.Token);
+    }
+
+    [Fact]
+    public async Task Refresh_IssuanceFails_KeepsStoredToken()
+    {
+        var h = new FakeGarminHandler();
+        var store = new InMemoryTokenStore();
+        var (_, tokens) = TestGarmin.Create(h, store);
+        var current = await tokens.GetTokenAsync(CancellationToken.None);
+        h.On("/personalapitoken-service", _ => new HttpResponseMessage(HttpStatusCode.Unauthorized));
+
+        await Assert.ThrowsAsync<GarminAuthException>(() => tokens.RefreshAsync(current, CancellationToken.None));
+
+        Assert.Equal(current, (await store.LoadAsync(CancellationToken.None))!.Token);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("<html>oops</html>")]
+    [InlineData("a.b")]
+    [InlineData("a..c")]
+    public async Task GetToken_NonJwtBody_ThrowsAuth_StoresNothing(string body)
+    {
+        var h = new FakeGarminHandler();
+        var store = new InMemoryTokenStore();
+        var (_, tokens) = TestGarmin.Create(h, store);
+        h.On("/personalapitoken-service", _ => TestGarmin.Text(body));
+
+        var ex = await Assert.ThrowsAsync<GarminAuthException>(() => tokens.GetTokenAsync(CancellationToken.None));
+
+        Assert.DoesNotContain("oops", ex.Message);
+        Assert.Null(store.Current);
+    }
+
+    [Fact]
+    public async Task GetToken_TokenEndpoint500_ThrowsAuth()
+    {
+        var h = new FakeGarminHandler();
+        var (_, tokens) = TestGarmin.Create(h);
+        h.On("/personalapitoken-service", _ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
+
+        var ex = await Assert.ThrowsAsync<GarminAuthException>(() => tokens.GetTokenAsync(CancellationToken.None));
+
+        Assert.Contains("500", ex.Message);
     }
 }

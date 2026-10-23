@@ -13,6 +13,14 @@ public static class TestGarmin
     public static (GarminApiClient Client, TokenProvider Tokens) Create(
         FakeGarminHandler handler, ITokenStore? store = null, TimeProvider? time = null, string? keyFile = null)
     {
+        var parts = CreateParts(handler, store, time, keyFile);
+        return (parts.NewClient(new GarminAuthSession()), parts.Tokens);
+    }
+
+    /// <summary>Wspólne części klienta; <see cref="Parts.NewClient"/> tworzy klienta z podaną sesją zadania.</summary>
+    public static Parts CreateParts(
+        FakeGarminHandler handler, ITokenStore? store = null, TimeProvider? time = null, string? keyFile = null)
+    {
         keyFile ??= WriteKeyFile();
         var options = Options.Create(new GarminOptions
         {
@@ -25,8 +33,13 @@ public static class TestGarmin
         // Domyślna reguła tokenu; testy mogą ją nadpisać kolejnym On(...).
         handler.On(TokenPrefix, _ => Text(Jwt(time.GetUtcNow().AddHours(24))));
         var tokens = new TokenProvider(http, store ?? new InMemoryTokenStore(), options, time);
-        var client = new GarminApiClient(http, tokens, options, NullLogger<GarminApiClient>.Instance);
-        return (client, tokens);
+        return new Parts(http, tokens, options, time);
+    }
+
+    public sealed record Parts(HttpClient Http, TokenProvider Tokens, IOptions<GarminOptions> Options, TimeProvider Time)
+    {
+        public GarminApiClient NewClient(GarminAuthSession session) =>
+            new(Http, Tokens, session, Options, Time, NullLogger<GarminApiClient>.Instance);
     }
 
     public static string WriteKeyFile(string content = "test-key\n")

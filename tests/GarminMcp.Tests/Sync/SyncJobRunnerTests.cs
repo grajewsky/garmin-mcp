@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json.Nodes;
+using GarminMcp.Garmin;
 using GarminMcp.Storage;
 using GarminMcp.Sync;
 using GarminMcp.Storage.Entities;
@@ -90,13 +91,13 @@ public class SyncJobRunnerTests(PostgresFixture fx)
     }
 
     [Fact]
-    public async Task TokenRejected_StatusAuthFailed_MessageExplains_ThenNextRunResumes()
+    public async Task DataAndTokenEndpoint401_AuthFailed_KeepsStoredToken_ThenNextRunResumes()
     {
         var host = await CreateAsync();
-        var tokenCalls = 0;
-        host.Handler.On(DetailPath + "1003", _ => new HttpResponseMessage(HttpStatusCode.Unauthorized));
-        host.Handler.On(TestGarmin.TokenPrefix, _ =>
-            ++tokenCalls == 1 ? TestGarmin.Text(TestGarmin.Jwt(DateTimeOffset.UtcNow.AddYears(50))) : new HttpResponseMessage(HttpStatusCode.Unauthorized));
+        var stored = new StoredToken(TestGarmin.Jwt(DateTimeOffset.UtcNow.AddHours(20)), DateTimeOffset.UtcNow.AddHours(20));
+        host.Store.Current = stored;
+        host.Handler.On(ListPath, _ => new HttpResponseMessage(HttpStatusCode.Unauthorized));
+        host.Handler.On(TestGarmin.TokenPrefix, _ => new HttpResponseMessage(HttpStatusCode.Unauthorized));
 
         await host.Runner.StartAsync(null, null);
         await host.Runner.CurrentTask!;
@@ -105,20 +106,53 @@ public class SyncJobRunnerTests(PostgresFixture fx)
         Assert.Contains("401", failed.Message);
         Assert.NotNull(failed.FinishedAt);
         Assert.Null(failed.LastSuccessfulSyncAt);
-        Assert.Equal(1, DetailCalls(host, 1001));
-        Assert.Equal(1, DetailCalls(host, 1002));
+        Assert.Equal(stored, host.Store.Current);
+        Assert.Equal(1, host.Handler.CountCalls(TestGarmin.TokenPrefix));
 
-        host.Handler.On(DetailPath + "1003", _ => TestGarmin.Json("""{"detail":true}"""));
-        host.Handler.On(TestGarmin.TokenPrefix, _ => TestGarmin.Text(TestGarmin.Jwt(DateTimeOffset.UtcNow.AddHours(24))));
+        var items = Enumerable.Range(1, 3).Select(i => Item(1000 + i, 9 + i)).ToList();
+        host.Handler.On(ListPath, req =>
+        {
+            var start = int.Parse(System.Web.HttpUtility.ParseQueryString(req.RequestUri!.Query)["start"]!);
+            return TestGarmin.Json(new JsonArray(items.Skip(start).Select(n => JsonNode.Parse(n.ToJsonString())).ToArray()).ToJsonString());
+        });
         await host.Runner.StartAsync(null, null);
         await host.Runner.CurrentTask!;
 
         var done = await host.Runner.GetStatusAsync();
         Assert.Equal("completed", done!.Status);
         Assert.NotNull(done.LastSuccessfulSyncAt);
-        Assert.Equal(1, DetailCalls(host, 1001));
-        Assert.Equal(1, DetailCalls(host, 1002));
-        Assert.Equal(2, DetailCalls(host, 1003));
+        Assert.Equal(1, DetailCalls(host, 1003));
+        Assert.Equal(1, host.Handler.CountCalls(TestGarmin.TokenPrefix));
+    }
+
+    [Theory]
+    [InlineData(true)]  // token potwierdzony przez aktywności przed 401
+    [InlineData(false)] // pierwsze użycie tokenu kończy się 401
+    public async Task EndpointAlways401_AtMostOneTokenIssuancePerJob_JobsComplete_OtherDatasetsStored(bool withActivities)
+    {
+        var host = await CreateAsync(
+            list: withActivities ? null : _ => TestGarmin.Json("[]"),
+            datasets: HealthDatasets.All.Where(d => d.Name is "sleep" or "hrv").ToList());
+        host.Store.Current = new StoredToken(TestGarmin.Jwt(DateTimeOffset.UtcNow.AddHours(20)), DateTimeOffset.UtcNow.AddHours(20));
+        host.Handler.On(SleepPath, _ => new HttpResponseMessage(HttpStatusCode.Unauthorized));
+        host.Handler.On("/hrv-service", _ => TestGarmin.Json("""{"hrvSummaries":[{"calendarDate":"2022-08-10","lastNightAvg":50}]}"""));
+
+        for (var run = 1; run <= 3; run++)
+        {
+            var before = host.Handler.CountCalls(TestGarmin.TokenPrefix);
+            await host.Runner.StartAsync(null, null);
+            await host.Runner.CurrentTask!;
+            var status = await host.Runner.GetStatusAsync();
+
+            Assert.Equal("completed", status!.Status);
+            Assert.Contains(status.Errors, e => e.StartsWith("sleep ") && e.Contains("HTTP 401"));
+            Assert.True(host.Handler.CountCalls(TestGarmin.TokenPrefix) - before <= 1);
+        }
+
+        await using var db = PostgresFixture.OpenAnother(host.Db);
+        Assert.NotEmpty(await db.Hrvs.ToListAsync());
+        if (withActivities)
+            Assert.Equal(3, await db.Activities.CountAsync(a => a.DetailFetchedAt != null));
     }
 
     [Fact]

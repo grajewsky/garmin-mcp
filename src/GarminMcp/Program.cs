@@ -18,6 +18,8 @@ builder.Services.AddHttpClient<TokenProvider>(ConfigureGarminClient);
 builder.Services.AddHttpClient<GarminApiClient>(ConfigureGarminClient);
 
 builder.Services.AddScoped<ITokenStore, DbTokenStore>();
+// Jedno wymuszone odświeżenie tokenu na zadanie synchronizacji: sesja współdzielona przez klientów w scope zadania.
+builder.Services.AddScoped<GarminAuthSession>();
 builder.Services.AddScoped<ActivityRecordWriter>();
 builder.Services.AddScoped<ActivitySync>();
 builder.Services.AddScoped<HealthSync>();
