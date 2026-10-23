@@ -43,7 +43,7 @@ public sealed class GarminApiClient(
                 if (refreshed)
                     throw new GarminAuthException("Garmin rejected a fresh access token (401).");
                 refreshed = true;
-                await tokens.InvalidateAsync(ct);
+                await tokens.InvalidateAsync(token, ct);
                 continue;
             }
 

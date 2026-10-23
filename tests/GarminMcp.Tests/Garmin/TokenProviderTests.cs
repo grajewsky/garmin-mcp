@@ -85,4 +85,32 @@ public class TokenProviderTests
 
         Assert.Contains("not found", ex.Message);
     }
+
+    [Fact]
+    public async Task Invalidate_StaleRejectedToken_DoesNotClearCurrent()
+    {
+        var h = new FakeGarminHandler();
+        var store = new InMemoryTokenStore();
+        var (_, tokens) = TestGarmin.Create(h, store);
+        var current = await tokens.GetTokenAsync(CancellationToken.None);
+
+        await tokens.InvalidateAsync("already-replaced-token", CancellationToken.None);
+
+        Assert.Equal(current, (await store.LoadAsync(CancellationToken.None))!.Token);
+        Assert.Equal(current, await tokens.GetTokenAsync(CancellationToken.None));
+        Assert.Equal(1, h.CountCalls("/personalapitoken-service"));
+    }
+
+    [Fact]
+    public async Task Invalidate_MatchingRejectedToken_ClearsStore()
+    {
+        var h = new FakeGarminHandler();
+        var store = new InMemoryTokenStore();
+        var (_, tokens) = TestGarmin.Create(h, store);
+        var current = await tokens.GetTokenAsync(CancellationToken.None);
+
+        await tokens.InvalidateAsync(current, CancellationToken.None);
+
+        Assert.Null(await store.LoadAsync(CancellationToken.None));
+    }
 }

@@ -34,11 +34,23 @@ public sealed class TokenProvider(HttpClient http, ITokenStore store, IOptions<G
         }
     }
 
-    public async Task InvalidateAsync(CancellationToken ct)
+    public Task InvalidateAsync(CancellationToken ct) => InvalidateAsync(null, ct);
+
+    /// <summary>
+    /// Czyści zapisany token. Gdy podano <paramref name="rejectedToken"/>, czyści tylko jeśli zapisany token
+    /// nadal jest tym odrzuconym (nie kasuje tokenu już wymienionego przez równoległe żądanie).
+    /// </summary>
+    public async Task InvalidateAsync(string? rejectedToken, CancellationToken ct)
     {
         await _gate.WaitAsync(ct);
         try
         {
+            if (rejectedToken is not null)
+            {
+                var stored = await store.LoadAsync(ct);
+                if (stored is null || stored.Token != rejectedToken)
+                    return;
+            }
             await store.ClearAsync(ct);
         }
         finally
