@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using GarminMcp.Mapping;
 using GarminMcp.Storage;
 using GarminMcp.Storage.Entities;
@@ -40,13 +41,29 @@ public static class HealthDatasets
         Range("wellness_activities", 31, (s, e) => $"/wellnessactivity-service/activity/summary/range/{F(s)}/{F(e)}",
             JsonValueKind.Array, (db, r, at) => UpsertAsync(db, HealthMappers.GroupByCalendarDate("wellness_activities", r, at), x => [x.Dataset, x.CalendarDate])),
         Day("heart_rate_daily", s => $"/wellness-service/wellness/dailyHeartRate?date={F(s)}",
-            (db, r, _, at) => UpsertAsync(db, HealthMappers.HeartRateDay(r, at) is { } h ? new[] { h } : Array.Empty<HeartRateDaily>(), x => [x.CalendarDate]),
+            (db, r, start, at) => UpsertAsync(db, [HeartRateFor(r, start, at)], x => [x.CalendarDate]),
             JsonValueKind.Object),
         RawDay("spo2", s => $"/wellness-service/wellness/daily/spo2acclimation/{F(s)}"),
         RawDay("nutrition", s => $"/nutrition-service/food/logs/{F(s)}"),
         RawDay("menstrual_summary", s => $"/periodichealth-service/menstrualcycle/summary/{F(s)}"),
         RawDay("menstrual_dayview", s => $"/periodichealth-service/menstrualcycle/dayview/{F(s)}"),
     ];
+
+    /// <summary>Wiersz tętna dla dnia chunka (klucz = data żądania, niezależnie od calendarDate w odpowiedzi).</summary>
+    private static HeartRateDaily HeartRateFor(JsonElement root, DateOnly start, DateTimeOffset at)
+    {
+        var row = HealthMappers.HeartRateDay(root, at);
+        if (row is null)
+        {
+            var node = JsonNode.Parse(root.GetRawText())!;
+            node["calendarDate"] = F(start);
+            using var patched = JsonDocument.Parse(node.ToJsonString());
+            row = HealthMappers.HeartRateDay(patched.RootElement, at)!;
+            row.Raw = JsonRead.Clone(root);
+        }
+        row.CalendarDate = start;
+        return row;
+    }
 
     private static string F(DateOnly d) => d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 

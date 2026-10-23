@@ -23,7 +23,7 @@ public sealed class HealthSync(GarminApiClient api, GarminDbContext db, IOptions
         {
             var recorded = await db.HealthChunks.AsNoTracking().Where(c => c.Dataset == ds.Name)
                 .ToDictionaryAsync(c => c.ChunkStart, c => c.FetchedAt, ct);
-            var chunks = DateChunker.Chunk(historyStart, scope.From ?? historyStart, scope.To ?? today, ds.ChunkDays)
+            var chunks = DateChunker.Chunk(historyStart, scope.From ?? historyStart, Min(scope.To ?? today, today), ds.ChunkDays)
                 .Where(c => DateChunker.NeedsFetch(c.NominalEnd, recorded.TryGetValue(c.Start, out var at) ? at : null, scope.Force, tail))
                 .ToList();
 
@@ -32,7 +32,7 @@ public sealed class HealthSync(GarminApiClient api, GarminDbContext db, IOptions
             {
                 try
                 {
-                    await FetchChunkAsync(ds, chunk, ct);
+                    await FetchChunkAsync(ds, chunk, today, ct);
                 }
                 catch (Exception ex) when (ex is not (GarminAuthException or OperationCanceledException or DbException or DbUpdateException))
                 {
@@ -49,9 +49,9 @@ public sealed class HealthSync(GarminApiClient api, GarminDbContext db, IOptions
         await SnapshotsAsync(historyStart, today, progress, ct);
     }
 
-    private async Task FetchChunkAsync(HealthDataset ds, ChunkSpan chunk, CancellationToken ct)
+    private async Task FetchChunkAsync(HealthDataset ds, ChunkSpan chunk, DateOnly today, CancellationToken ct)
     {
-        using var doc = await api.GetJsonAsync(ds.Path(chunk.Start, chunk.RequestEnd), ct);
+        using var doc = await api.GetJsonAsync(ds.Path(chunk.Start, Min(chunk.NominalEnd, today)), ct);
         var now = time.GetUtcNow();
         if (doc is not null)
             await ds.UpsertAsync(db, doc.RootElement, chunk.Start, now);
@@ -100,6 +100,8 @@ public sealed class HealthSync(GarminApiClient api, GarminDbContext db, IOptions
             progress.Advance();
         }
     }
+
+    private static DateOnly Min(DateOnly a, DateOnly b) => a < b ? a : b;
 
     private static string Describe(Exception ex) => ex is GarminApiException api ? $"HTTP {api.StatusCode}" : ex.Message;
 

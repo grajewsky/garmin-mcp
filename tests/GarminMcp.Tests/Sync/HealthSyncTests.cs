@@ -117,7 +117,35 @@ public class HealthSyncTests(PostgresFixture fx)
         var reqs = Requests(env, SleepPath);
         Assert.Single(reqs);
         Assert.Equal("2022-01-01", Query(reqs[0], "startDate"));
-        Assert.Equal("2022-01-06", Query(reqs[0], "endDate")); // przycięte do scope.To
+        Assert.Equal("2022-01-31", Query(reqs[0], "endDate"));
+    }
+
+    [Fact]
+    public async Task FutureTo_NeverRequestsAfterToday()
+    {
+        var env = await CreateAsync();
+        SleepEchoesStart(env);
+        env.Handler.On(HrPath, r => TestGarmin.Json("""{"restingHeartRate":50}"""));
+
+        await Run(env, new SyncScope(new DateOnly(2022, 3, 1), new DateOnly(2022, 12, 31)));
+        await Run(env, new SyncScope(new DateOnly(2022, 3, 8), new DateOnly(2022, 12, 31)), "heart_rate_daily");
+
+        Assert.All(Requests(env, SleepPath), r => Assert.True(Query(r, "endDate").CompareTo("2022-03-10") <= 0));
+        Assert.Equal(["2022-03-08", "2022-03-09", "2022-03-10"], Requests(env, HrPath).Select(r => Query(r, "date")));
+    }
+
+    [Fact]
+    public async Task HeartRate_ResponseWithoutCalendarDate_StoredForRequestedDay()
+    {
+        var env = await CreateAsync();
+        env.Handler.On(HrPath, _ => TestGarmin.Json("""{"restingHeartRate":50}"""));
+
+        await Run(env, new SyncScope(new DateOnly(2022, 3, 5), new DateOnly(2022, 3, 5)), "heart_rate_daily");
+
+        await using var read = PostgresFixture.OpenAnother(env.Db);
+        var row = Assert.Single(await read.HeartRateDailies.ToListAsync());
+        Assert.Equal(new DateOnly(2022, 3, 5), row.CalendarDate);
+        Assert.Equal(50, row.Resting);
     }
 
     [Fact]
