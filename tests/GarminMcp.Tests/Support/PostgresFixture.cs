@@ -11,7 +11,9 @@ namespace GarminMcp.Tests.Support;
 /// </summary>
 public sealed class PostgresFixture : IAsyncLifetime
 {
+    // Każdy test ma własną bazę, a więc własną pulę połączeń: podnieś limit serwera i szybko zamykaj bezczynne połączenia.
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:17-alpine")
+        .WithCommand("-c", "max_connections=1000")
         .Build();
 
     public string ConnectionString => _container.GetConnectionString();
@@ -30,7 +32,11 @@ public sealed class PostgresFixture : IAsyncLifetime
             await cmd.ExecuteNonQueryAsync();
         }
 
-        var cs = new NpgsqlConnectionStringBuilder(ConnectionString) { Database = dbName }.ConnectionString;
+        var cs = new NpgsqlConnectionStringBuilder(ConnectionString) {
+            Database = dbName,
+            ConnectionIdleLifetime = 2,
+            ConnectionPruningInterval = 1,
+        }.ConnectionString;
         var db = NewContext(cs);
         await db.Database.MigrateAsync();
         return db;
