@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: garmin
+      POSTGRES_DB: garmin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?ustaw POSTGRES_PASSWORD w .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U garmin -d garmin"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    restart: unless-stopped
+
+  app:
+    build: .
+    # Plik klucza ma prawa 600 właściciela hosta, więc kontener działa jako ten UID (nie-root).
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__Garmin: Host=postgres;Port=5432;Database=garmin;Username=garmin;Password=${POSTGRES_PASSWORD};GSS Encryption Mode=Disable
+      Garmin__ApiKeyFile: /run/secrets/garmin_api_key
+    secrets:
+      - garmin_api_key
+    ports:
+      - "127.0.0.1:8765:8080"
+    restart: unless-stopped
+
+secrets:
+  garmin_api_key:
+    file: ${GARMIN_API_KEY_FILE:-${HOME}/.config/garmin-mcp/api-key}
+
+volumes:
+  pgdata:
