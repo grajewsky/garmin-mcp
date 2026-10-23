@@ -13,6 +13,9 @@ namespace GarminMcp.Sync;
 /// <summary>Synchronizacja danych zdrowotnych w zakotwiczonych chunkach (finalne chunki są pomijane, ogon odświeżany) i snapshotów.</summary>
 public sealed class HealthSync(GarminApiClient api, GarminDbContext db, IOptions<GarminOptions> options, TimeProvider time)
 {
+    /// <summary>Po tylu kolejnych nieudanych chunkach zbiór jest pomijany do końca tego przebiegu.</summary>
+    public const int MaxConsecutiveFailures = 5;
+
     public async Task RunAsync(SyncScope scope, DateOnly historyStart, ISyncProgress progress, CancellationToken ct,
         IReadOnlyList<HealthDataset>? datasets = null)
     {
@@ -28,15 +31,23 @@ public sealed class HealthSync(GarminApiClient api, GarminDbContext db, IOptions
                 .ToList();
 
             progress.SetPhase($"health:{ds.Name}", chunks.Count);
+            var failures = 0;
             foreach (var chunk in chunks)
             {
                 try
                 {
                     await FetchChunkAsync(ds, chunk, today, ct);
+                    failures = 0;
                 }
                 catch (Exception ex) when (ex is not (GarminAuthException or OperationCanceledException or DbException or DbUpdateException))
                 {
-                    progress.AddError($"{ds.Name} {Fmt(chunk.Start)}: {Describe(ex)}");
+                    var error = Describe(ex);
+                    progress.AddError($"{ds.Name} {Fmt(chunk.Start)}: {error}");
+                    if (++failures >= MaxConsecutiveFailures)
+                    {
+                        progress.AddError($"{ds.Name}: stopped after {MaxConsecutiveFailures} consecutive failures (last: {error})");
+                        break;
+                    }
                 }
                 finally
                 {
@@ -54,7 +65,15 @@ public sealed class HealthSync(GarminApiClient api, GarminDbContext db, IOptions
         using var doc = await api.GetJsonAsync(ds.Path(chunk.Start, Min(chunk.NominalEnd, today)), ct);
         var now = time.GetUtcNow();
         if (doc is not null)
-            await ds.UpsertAsync(db, doc.RootElement, chunk.Start, now);
+        {
+            var result = await ds.UpsertAsync(db, doc.RootElement, chunk.Start, now);
+            if (result.Mapped < result.Items)
+            {
+                // Kształt odpowiedzi niezgodny z mapperem: zapisz to, co się dało, ale nie oznaczaj chunka jako pobranego.
+                await db.SaveChangesAsync(ct);
+                throw new SyncException($"{result.Items} items, {result.Mapped} mapped");
+            }
+        }
 
         var row = await db.HealthChunks.FindAsync([ds.Name, chunk.Start], ct);
         if (row is null)

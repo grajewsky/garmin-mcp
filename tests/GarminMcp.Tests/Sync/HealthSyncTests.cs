@@ -244,6 +244,66 @@ public class HealthSyncTests(PostgresFixture fx)
     }
 
     [Fact]
+    public async Task ResponseShapeNotMatchingMapper_ChunkNotRecorded_ErrorAdded()
+    {
+        var env = await CreateAsync();
+        env.Handler.On(SleepPath, _ => TestGarmin.Json("""[{"dailySleepDTO":{"calendarDate":"2022-01-10","sleepTimeSeconds":100}}]"""));
+
+        await Run(env, new SyncScope(new DateOnly(2022, 1, 1), new DateOnly(2022, 1, 31)));
+
+        await using var read = PostgresFixture.OpenAnother(env.Db);
+        Assert.Equal(0, await read.HealthChunks.CountAsync(c => c.Dataset == "sleep"));
+        Assert.Equal(["sleep 2022-01-01: 1 items, 0 mapped"], env.Progress.Errors);
+    }
+
+    [Fact]
+    public async Task WeightRowsWithoutCalendarDate_PartialMapping_StoresMapped_ChunkNotRecorded()
+    {
+        var env = await CreateAsync();
+        env.Handler.On("/weight-service/weight/all/", _ => TestGarmin.Json(
+            """[{"calendarDate":"2022-01-10","weight":70000,"timestampGMT":1641800000000},{"weight":71000,"timestampGMT":1641900000000}]"""));
+
+        await Run(env, new SyncScope(new DateOnly(2022, 1, 1), new DateOnly(2022, 1, 31)), "weight");
+
+        await using var read = PostgresFixture.OpenAnother(env.Db);
+        Assert.Equal(0, await read.HealthChunks.CountAsync(c => c.Dataset == "weight"));
+        Assert.Equal(["weight 2022-01-01: 2 items, 1 mapped"], env.Progress.Errors);
+        Assert.Single(await read.Weights.ToListAsync());
+    }
+
+    [Fact]
+    public async Task DatasetFailingEveryDay_StopsAfter5_OneSummaryError_NextDatasetRuns()
+    {
+        var env = await CreateAsync();
+        env.Handler.On(HrPath, _ => new HttpResponseMessage(HttpStatusCode.Forbidden));
+        env.Handler.On("/wellness-service/wellness/daily/spo2acclimation/", _ => TestGarmin.Json("""{"x":1}"""));
+        var scope = new SyncScope(new DateOnly(2022, 2, 1), new DateOnly(2022, 2, 20));
+
+        await env.Sync.RunAsync(scope, HistoryStart, env.Progress, CancellationToken.None,
+            HealthDatasets.All.Where(d => d.Name is "heart_rate_daily" or "spo2").ToList());
+
+        Assert.Equal(HealthSync.MaxConsecutiveFailures, Requests(env, HrPath).Count);
+        var summary = Assert.Single(env.Progress.Errors, e => e.Contains("consecutive"));
+        Assert.Equal("heart_rate_daily: stopped after 5 consecutive failures (last: HTTP 403)", summary);
+        Assert.Equal(20, Requests(env, "/wellness-service/wellness/daily/spo2acclimation/").Count);
+    }
+
+    [Fact]
+    public async Task ConsecutiveFailureCounter_ResetsOnSuccess()
+    {
+        var env = await CreateAsync();
+        var n = 0;
+        env.Handler.On(HrPath, r => ++n % 4 == 0
+            ? TestGarmin.Json($$"""{"calendarDate":"{{Query(r, "date")}}"}""")
+            : new HttpResponseMessage(HttpStatusCode.Forbidden));
+
+        await Run(env, new SyncScope(new DateOnly(2022, 2, 1), new DateOnly(2022, 2, 12)), "heart_rate_daily");
+
+        Assert.Equal(12, Requests(env, HrPath).Count);
+        Assert.DoesNotContain(env.Progress.Errors, e => e.Contains("consecutive"));
+    }
+
+    [Fact]
     public async Task Snapshots_StoredEachRun()
     {
         var env = await CreateAsync();
