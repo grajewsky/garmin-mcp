@@ -156,6 +156,25 @@ public class SyncJobRunnerTests(PostgresFixture fx)
     }
 
     [Fact]
+    public async Task MalformedDetailForOneActivity_JobCompletes_ErrorRecorded_OthersFetched_HealthRuns()
+    {
+        var host = await CreateAsync(datasets: HealthDatasets.All.Where(d => d.Name == "sleep").ToList());
+        host.Handler.On(DetailPath + "1002", _ => TestGarmin.Text("<html>maintenance</html>"));
+
+        await host.Runner.StartAsync(null, null);
+        await host.Runner.CurrentTask!;
+        var status = await host.Runner.GetStatusAsync();
+
+        Assert.Equal("completed", status!.Status);
+        Assert.Contains(status.Errors, e => e.StartsWith("activity 1002: "));
+        await using var db = PostgresFixture.OpenAnother(host.Db);
+        Assert.Null((await db.Activities.SingleAsync(a => a.ActivityId == 1002)).DetailFetchedAt);
+        Assert.NotNull((await db.Activities.SingleAsync(a => a.ActivityId == 1001)).DetailFetchedAt);
+        Assert.NotNull((await db.Activities.SingleAsync(a => a.ActivityId == 1003)).DetailFetchedAt);
+        Assert.NotEmpty(await db.HealthChunks.Where(c => c.Dataset == "sleep").ToListAsync());
+    }
+
+    [Fact]
     public async Task UnexpectedException_StatusFailed_MessageSet()
     {
         var host = await CreateAsync(list: _ => TestGarmin.Json("{}"));

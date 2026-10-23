@@ -126,9 +126,10 @@ public sealed class ActivitySync(GarminApiClient api, GarminDbContext db, Activi
             {
                 await FetchOneAsync(id, progress, ct);
             }
-            catch (GarminApiException ex)
+            catch (Exception ex) when (ex is not (GarminAuthException or OperationCanceledException))
             {
-                progress.AddError($"activity {id}: HTTP {ex.StatusCode}");
+                // Błąd jednej aktywności (HTTP, zły JSON, baza) nie przerywa synchronizacji; aktywność zostaje do pobrania.
+                progress.AddError($"activity {id}: {(ex is GarminApiException api ? $"HTTP {api.StatusCode}" : ex.Message)}");
             }
             finally
             {
